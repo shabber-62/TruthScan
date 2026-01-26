@@ -1,4 +1,4 @@
-import { CheckCircle, XCircle, Download, AlertTriangle } from "lucide-react";
+import { CheckCircle, XCircle, Download, AlertTriangle, BookOpen } from "lucide-react";
 import { CyberCard } from "@/components/ui/cyber-card";
 import { CyberButton } from "@/components/ui/cyber-button";
 import { ConfidenceMeter } from "./ConfidenceMeter";
@@ -8,6 +8,7 @@ interface ResultDisplayProps {
   isReal: boolean;
   confidence: number;
   reason: string;
+  sources?: string;
   onDownloadReport: () => void;
   category?: string;
 }
@@ -16,6 +17,7 @@ export const ResultDisplay = ({
   isReal,
   confidence,
   reason,
+  sources,
   onDownloadReport,
   category = "NEWS",
 }: ResultDisplayProps) => {
@@ -70,6 +72,26 @@ export const ResultDisplay = ({
           {reason}
         </div>
       </div>
+
+      {/* Sources */}
+      {sources && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 text-sm font-mono text-muted-foreground">
+            <BookOpen className="w-4 h-4" />
+            VERIFICATION SOURCES
+          </div>
+          <div
+            className={cn(
+              "p-3 rounded-lg border font-mono text-xs",
+              isReal
+                ? "bg-primary/5 border-primary/20 text-primary"
+                : "bg-neon-red/5 border-neon-red/20 text-neon-red"
+            )}
+          >
+            {sources}
+          </div>
+        </div>
+      )}
 
       {/* Download Report Button */}
       <CyberButton
