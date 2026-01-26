@@ -13,7 +13,6 @@ serve(async (req) => {
   try {
     const { type, content, context, platform } = await req.json();
     
-    // Check for API keys in priority order: OpenAI > Gemini > Lovable AI
     const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
     const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
@@ -55,96 +54,130 @@ serve(async (req) => {
       userPrompt = `Analyze this ${platform || "social media"} content for troll/bot behavior:\n\n${content}`;
     }
 
-    let response;
-    let providerUsed = "";
+    let result = null;
+    let lastError = null;
 
     // Try OpenAI first
-    if (OPENAI_API_KEY) {
-      providerUsed = "OpenAI";
-      response = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "gpt-4o-mini",
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
-          ],
-          response_format: { type: "json_object" },
-        }),
-      });
+    if (OPENAI_API_KEY && !result) {
+      try {
+        console.log("Attempting OpenAI...");
+        const response = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${OPENAI_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "gpt-4o-mini",
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: userPrompt },
+            ],
+            response_format: { type: "json_object" },
+          }),
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          result = JSON.parse(data.choices[0].message.content);
+          console.log("OpenAI success");
+        } else {
+          const errorText = await response.text();
+          console.log("OpenAI failed:", response.status, errorText);
+          lastError = `OpenAI: ${response.status}`;
+        }
+      } catch (e) {
+        console.log("OpenAI error:", e);
+        lastError = `OpenAI error: ${e}`;
+      }
     }
-    // Try Gemini if OpenAI failed or not available
-    else if (GEMINI_API_KEY) {
-      providerUsed = "Gemini";
-      response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          contents: [{
-            parts: [{
-              text: `${systemPrompt}\n\nUser request: ${userPrompt}\n\nRespond with valid JSON only.`
-            }]
-          }],
-          generationConfig: {
-            responseMimeType: "application/json"
-          }
-        }),
-      });
+
+    // Try Gemini if OpenAI failed
+    if (GEMINI_API_KEY && !result) {
+      try {
+        console.log("Attempting Gemini...");
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            contents: [{
+              parts: [{
+                text: `${systemPrompt}\n\nUser request: ${userPrompt}\n\nRespond with valid JSON only.`
+              }]
+            }],
+            generationConfig: {
+              responseMimeType: "application/json"
+            }
+          }),
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          const textContent = data.candidates?.[0]?.content?.parts?.[0]?.text;
+          result = JSON.parse(textContent);
+          console.log("Gemini success");
+        } else {
+          const errorText = await response.text();
+          console.log("Gemini failed:", response.status, errorText);
+          lastError = `Gemini: ${response.status}`;
+        }
+      } catch (e) {
+        console.log("Gemini error:", e);
+        lastError = `Gemini error: ${e}`;
+      }
     }
+
     // Fallback to Lovable AI
-    else if (LOVABLE_API_KEY) {
-      providerUsed = "Lovable AI";
-      response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${LOVABLE_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "google/gemini-3-flash-preview",
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
-          ],
-          response_format: { type: "json_object" },
-        }),
-      });
-    }
-
-    if (!response || !response.ok) {
-      const status = response?.status;
-      if (status === 429) {
-        return new Response(JSON.stringify({ error: "Rate limit exceeded" }), {
-          status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" },
+    if (LOVABLE_API_KEY && !result) {
+      try {
+        console.log("Attempting Lovable AI...");
+        const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${LOVABLE_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "google/gemini-3-flash-preview",
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: userPrompt },
+            ],
+            response_format: { type: "json_object" },
+          }),
         });
+
+        if (response.status === 429) {
+          return new Response(JSON.stringify({ error: "Rate limit exceeded" }), {
+            status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+        if (response.status === 402) {
+          return new Response(JSON.stringify({ error: "Payment required" }), {
+            status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        if (response.ok) {
+          const data = await response.json();
+          result = JSON.parse(data.choices[0].message.content);
+          console.log("Lovable AI success");
+        } else {
+          const errorText = await response.text();
+          console.log("Lovable AI failed:", response.status, errorText);
+          lastError = `Lovable AI: ${response.status}`;
+        }
+      } catch (e) {
+        console.log("Lovable AI error:", e);
+        lastError = `Lovable AI error: ${e}`;
       }
-      if (status === 402) {
-        return new Response(JSON.stringify({ error: "Payment required" }), {
-          status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-      throw new Error(`AI analysis failed with ${providerUsed}`);
     }
 
-    const data = await response.json();
-    let result;
-
-    // Parse response based on provider
-    if (providerUsed === "Gemini") {
-      const textContent = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      result = JSON.parse(textContent);
-    } else {
-      // OpenAI and Lovable AI have same response format
-      result = JSON.parse(data.choices[0].message.content);
+    if (!result) {
+      throw new Error(`All AI providers failed. Last error: ${lastError}`);
     }
-
-    console.log(`Analysis completed using ${providerUsed}`);
 
     return new Response(JSON.stringify(result), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
