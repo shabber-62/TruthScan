@@ -1,77 +1,219 @@
-# Truth Seeker AI
+# 🛡️ TruthScan
 
-Create a professional AI-powered Fake News Detection web app.
+### AI-Powered Misinformation & Fake News Detection Platform
 
-Requirements:
-- Dark hacker style UI with neon colors
-- Homepage with 4 cards:
-  1. Text Fake News Detection
-  2. Image Fake Detection
-  3. Live Scan (camera upload)
-  4. Social Media Troll Detection
+<p align="center">
+  <strong>Detect. Verify. Understand. Before You Share.</strong>
+</p>
 
-Text Detection:
-- Text area to paste news
-- Button: “Check News”
-- Output: REAL or FAKE
-- Show confidence percentage
-- Show reason in 2–3 lines
+<p align="center">
+  TruthScan is an AI-powered platform designed to analyze suspicious
+  news, text, images, and online content using AI analysis,
+  web search, and evidence-based verification.
+</p>
 
-Image Detection:
-- Image upload
-- Context text input
-- Detect if image is real or manipulated
-- Show confidence and explanation
+<p align="center">
+  <a href="YOUR_LIVE_DEMO_URL">🌐 Live Demo</a>
+  &nbsp; • &nbsp;
+  <a href="#-features">Features</a>
+  &nbsp; • &nbsp;
+  <a href="#-installation">Installation</a>
+  &nbsp; • &nbsp;
+  <a href="#-screenshots">Screenshots</a>
+</p>
 
-Live Scan:
-- Upload photo from camera
-- Scan and detect fake/real
-- Show percentage and explanation
+---
 
-Social Media:
-- Paste Instagram / Twitter / Facebook post
-- Detect troll / misinformation
-- Show confidence
+## 🚀 Overview
 
-Backend:
-- Python Flask backend
-- API routes for each feature
-- Use ML model (fake news dataset)
-- Dummy data is acceptable for demo
-- No API keys required
-- Fast response
+**TruthScan** is a modern AI-powered misinformation detection platform
+built to help users evaluate suspicious information before trusting
+or sharing it.
 
-Extra:
-- Button to download report (PDF or text)
-- Loading animation while scanning
-- Status indicator (backend online, model ready)
-- Mobile responsive
+Instead of simply returning a **"True" or "False"** answer, TruthScan
+combines AI analysis, web search, source verification, evidence
+collection, and confidence evaluation to provide a more informative
+result.
 
-Output:
-- Generate complete working project
-- Include frontend + backend
-- Ready to run locally
-- Clear instructions to run
+### 🎯 Core Goal
 
-This project was built with [Lovable](https://lovable.dev).
+> **Help users understand why a claim may be trustworthy, misleading,
+> or potentially false.**
 
-**Live app**: https://neon-truth-seeker.lovable.app
+---
 
-## Build with Lovable
+# ✨ Features
 
-Continue developing this project in the [Lovable editor](https://lovable.dev/projects/3ceaccb4-3e8d-4dc6-b89f-4331cb04d973).
+<table>
+<tr>
+<td width="50%">
 
-- **Ship faster**: describe what you want to build and Lovable handles the code.
-- **Stay in sync**: every change made in Lovable is committed straight to this repository.
-- **Full ownership**: this code is yours. Push to `main` on GitHub and your changes sync back into Lovable, ready for your next prompt.
+### 🧠 AI Analysis
 
-## Development
+Analyze text and online content using AI-powered reasoning.
 
-Prefer working locally? You need Node.js and npm — [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating).
+- Content classification
+- Claim analysis
+- Context understanding
+- Confidence estimation
 
-```sh
-git clone <this-repository-url>
-cd <repository-name>
-npm i
-npm run dev
-```
+</td>
+
+<td width="50%">
+
+### 📰 Fake News Detection
+
+Identify potentially misleading or false information.
+
+- Suspicious claims
+- Misinformation patterns
+- Risk indicators
+- AI-generated analysis
+
+</td>
+</tr>
+
+<tr>
+<td width="50%">
+
+### 🔎 Web Verification
+
+Search the web for supporting and contradicting evidence.
+
+- Source discovery
+- Evidence collection
+- Cross-source comparison
+- Credibility analysis
+
+</td>
+
+<td width="50%">
+
+### 📝 Text Scanner
+
+Analyze any suspicious text or claim.
+
+- Paste text
+- Analyze claims
+- Detect misinformation
+- Generate detailed results
+
+</td>
+</tr>
+
+<tr>
+<td width="50%">
+
+### 🖼️ Image Analysis
+
+Analyze images and potentially manipulated visual content.
+
+- Image inspection
+- Content analysis
+- Suspicious-content detection
+- AI-assisted evaluation
+
+</td>
+
+<td width="50%">
+
+### 🤖 AI Assistant
+
+Interactive AI assistant for content verification.
+
+- Ask questions
+- Understand results
+- Explain evidence
+- Get verification guidance
+
+</td>
+</tr>
+
+<tr>
+<td width="50%">
+
+### 📊 Confidence Analysis
+
+Provides an understandable evaluation instead of a simple verdict.
+
+- Confidence score
+- Risk level
+- Supporting evidence
+- Contradicting evidence
+
+</td>
+
+<td width="50%">
+
+### 🔐 Secure Platform
+
+Built with security and privacy in mind.
+
+- Secure authentication
+- Protected backend functions
+- Environment variables
+- API key protection
+
+</td>
+</tr>
+</table>
+
+---
+
+# 🧩 TruthScan Modules
+
+<div align="center">
+
+| Module | Purpose |
+|---|---|
+| 🧠 AI Analysis | Intelligent content evaluation |
+| 📝 Text Scan | Analyze suspicious text |
+| 🖼️ Image Scan | Analyze visual content |
+| 🌐 Web Search | Find external evidence |
+| 🔎 Fact Check | Compare claims with sources |
+| 🤖 AI Assistant | Interactive verification assistant |
+| 📊 Risk Analysis | Confidence and risk evaluation |
+| 📚 Evidence | Supporting and contradicting sources |
+
+</div>
+
+---
+
+# ⚙️ How TruthScan Works
+
+```text
+                    ┌──────────────────┐
+                    │      USER        │
+                    │  News / Claim    │
+                    │ Text / Image     │
+                    └────────┬─────────┘
+                             │
+                             ▼
+                 ┌──────────────────────┐
+                 │     TRUTHSCAN        │
+                 │    INPUT ANALYSIS    │
+                 └──────────┬───────────┘
+                            │
+          ┌─────────────────┼─────────────────┐
+          ▼                 ▼                 ▼
+   ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
+   │ TEXT ANALYSIS│   │IMAGE ANALYSIS│  │ WEB SEARCH  │
+   └──────┬──────┘   └──────┬──────┘   └──────┬──────┘
+          │                 │                 │
+          └─────────────────┼─────────────────┘
+                            ▼
+                 ┌──────────────────────┐
+                 │    AI EVALUATION     │
+                 │  Claim + Context +    │
+                 │  Evidence Analysis   │
+                 └──────────┬───────────┘
+                            ▼
+                 ┌──────────────────────┐
+                 │   VERIFICATION       │
+                 │      RESULT          │
+                 └──────────┬───────────┘
+                            ▼
+          ┌──────────────────────────────────┐
+          │ Evidence • Confidence • Risk     │
+          │ Supporting • Contradicting Data  │
+          └──────────────────────────────────┘
