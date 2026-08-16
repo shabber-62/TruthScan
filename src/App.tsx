@@ -10,6 +10,7 @@ import TextDetection from "./pages/TextDetection";
 import ImageDetection from "./pages/ImageDetection";
 import LiveScan from "./pages/LiveScan";
 import SocialMediaDetection from "./pages/SocialMediaDetection";
+import AiAssistant from "./pages/AiAssistant";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -27,6 +28,7 @@ const App = () => (
             <Route path="/image-detection" element={<ImageDetection />} />
             <Route path="/live-scan" element={<LiveScan />} />
             <Route path="/social-media" element={<SocialMediaDetection />} />
+            <Route path="/ai-mode" element={<AiAssistant />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
           <SettingsPanel />
