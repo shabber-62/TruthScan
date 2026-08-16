@@ -1,4 +1,4 @@
-import { FileText, Image, Camera, MessageCircle } from "lucide-react";
+import { FileText, Image, Camera, MessageCircle, Sparkles } from "lucide-react";
 import { Header } from "@/components/Header";
 import { FeatureCard } from "@/components/FeatureCard";
 import { StatusIndicator } from "@/components/StatusIndicator";
@@ -36,6 +36,16 @@ const Index = () => {
 
         {/* Feature Cards Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl mx-auto">
+          <FeatureCard
+            title="AI Mode"
+            description="Ask anything and get accurate, research-backed answers. Live web search keeps replies current — today's news, holidays, events and more."
+            icon={<Sparkles className="w-8 h-8" />}
+            to="/ai-mode"
+            variant="cyan"
+            glowClass="text-glow-cyan"
+            textGlowClass="text-neon-cyan"
+          />
+
           <FeatureCard
             title="Text Analysis"
             description="Paste any news article or text content to verify its authenticity. Our AI analyzes linguistic patterns, fact-checks claims, and identifies potential misinformation."
