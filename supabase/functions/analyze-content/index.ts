@@ -1,9 +1,12 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { webSearch, type SearchHit } from "../_shared/websearch.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
+
+const GATEWAY = "https://ai.gateway.lovable.dev/v1/chat/completions";
+const MODEL = "google/gemini-3.6-flash";
 
 interface SourceInfo {
   name: string;
@@ -21,377 +24,195 @@ interface AnalysisResult {
   verdict: "REAL" | "FAKE" | "MISLEADING" | "UNVERIFIED";
 }
 
-const TRUSTED_SOURCES: Record<string, { url: string; type: SourceInfo["type"] }> = {
-  "Google Fact Check": { url: "https://toolbox.google.com/factcheck/explorer", type: "fact-check" },
-  "PolitiFact": { url: "https://www.politifact.com", type: "fact-check" },
-  "Snopes": { url: "https://www.snopes.com", type: "fact-check" },
-  "Reuters Fact Check": { url: "https://www.reuters.com/fact-check", type: "fact-check" },
-  "BBC Verify": { url: "https://www.bbc.com/news/reality_check", type: "news" },
-  "AFP Fact Check": { url: "https://factcheck.afp.com", type: "fact-check" },
-  "Wikipedia": { url: "https://www.wikipedia.org", type: "database" },
-  "Official Government Records": { url: "https://www.gov.in", type: "official" },
-  "Associated Press": { url: "https://apnews.com", type: "news" },
-  "FactCheck.org": { url: "https://www.factcheck.org", type: "fact-check" },
-};
+const tools = [
+  {
+    type: "function",
+    function: {
+      name: "web_search",
+      description:
+        "Search the live web (news, fact-check sites, official pages) for evidence about a claim. Use for any factual, dated or time-sensitive claim (holidays, events, statistics, quotes, viral posts, images).",
+      parameters: {
+        type: "object",
+        properties: { query: { type: "string", description: "Search query" } },
+        required: ["query"],
+        additionalProperties: false,
+      },
+    },
+  },
+];
 
-function getSystemPrompt(type: string, platform?: string): string {
-  const baseInstruction = `You are an advanced fact-checking AI system used by government agencies. You must provide ACCURATE, DETAILED, and SOURCE-BACKED analysis.
+function classify(url: string): SourceInfo["type"] {
+  const u = url.toLowerCase();
+  if (/(factcheck|politifact|snopes|fact-check|altnews|boomlive|factly)/.test(u)) return "fact-check";
+  if (/(\.gov|\.gov\.in|\.nic\.in|who\.int|un\.org)/.test(u)) return "official";
+  if (/(wikipedia|britannica)/.test(u)) return "database";
+  if (/(reuters|apnews|bbc|ndtv|thehindu|indianexpress|timesofindia|cnn|guardian|news)/.test(u)) return "news";
+  return "web";
+}
 
-CRITICAL REQUIREMENTS:
-1. Analyze content thoroughly using multiple verification methods
-2. Provide specific, numbered reasoning points (3-5 points)
-3. Reference 2-4 trusted verification sources with contribution percentages
-4. Give a clear verdict: REAL, FAKE, MISLEADING, or UNVERIFIED
-5. Confidence score must reflect actual certainty (60-99%)
+function hostName(url: string): string {
+  try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return url; }
+}
 
-AVAILABLE TRUSTED SOURCES (use these for source attribution):
-- Google Fact Check (fact-check databases)
-- PolitiFact (political fact-checking)
-- Snopes (urban legends, rumors)
-- Reuters Fact Check (news verification)
-- BBC Verify (international news)
-- AFP Fact Check (global fact-checking)
-- Wikipedia (background context only)
-- Official Government Records (official data)
-- Associated Press (news verification)
-- FactCheck.org (policy claims)
+function buildSources(hits: SearchHit[]): SourceInfo[] {
+  const seen = new Set<string>();
+  const picked: SearchHit[] = [];
+  for (const h of hits) {
+    const host = hostName(h.url);
+    if (seen.has(host)) continue;
+    seen.add(host);
+    picked.push(h);
+    if (picked.length >= 4) break;
+  }
+  if (picked.length === 0) return [];
+  const base = Math.floor(100 / picked.length);
+  return picked.map((h, i) => ({
+    name: h.title?.slice(0, 80) || hostName(h.url),
+    url: h.url,
+    type: classify(h.url),
+    contribution: i === 0 ? 100 - base * (picked.length - 1) : base,
+  }));
+}
 
-You MUST respond with a valid JSON object containing:
+function getSystemPrompt(type: string, platform: string | undefined, language: string) {
+  const today = new Date().toISOString().slice(0, 10);
+  const nowIST = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+
+  const shared = `You are TruthScan, a government-grade fact-checking system with LIVE WEB ACCESS.
+
+Current UTC date: ${today}. Current time in India (IST): ${nowIST}.
+
+MANDATORY PROCESS:
+1. Call the web_search tool BEFORE judging any factual/time-sensitive claim (today's holidays, news, events, numbers, quotes). Run 1-3 searches with different wordings to cross-check.
+2. Base every conclusion on what the search results actually say. Never invent sources or URLs.
+3. If evidence is thin or contradictory, use verdict UNVERIFIED or MISLEADING with lower confidence.
+4. Write the analysis in ${language === "te" ? "formal Telugu" : "English"}.
+
+FINAL ANSWER: after research, reply with ONLY a JSON object (no markdown fences):
 {
   "isReal": boolean,
   "confidence": number (60-99),
   "verdict": "REAL" | "FAKE" | "MISLEADING" | "UNVERIFIED",
-  "reason": "2-3 sentence summary",
-  "reasonPoints": ["Point 1: Specific finding", "Point 2: ...", "Point 3: ..."],
-  "sources": [
-    {"name": "Source Name", "type": "fact-check|news|database|web|official", "contribution": 35},
-    {"name": "Source Name", "type": "...", "contribution": 25}
-  ]
+  "reason": "2-3 sentence summary stating the verified facts found on the web",
+  "reasonPoints": ["Point 1: specific evidence found + which site it came from", "Point 2: ...", "Point 3: ..."]
+}`;
+
+  if (type === "text") return `${shared}\n\nTEXT FOCUS: verify each factual claim against live search results; flag sensationalism, missing context, outdated dates.`;
+  if (type === "image") return `${shared}\n\nIMAGE FOCUS: inspect the image for manipulation, AI-generation artifacts, lighting/shadow inconsistency; ALSO search the web for the described scene/event to check whether it really happened and whether the image is known to be recycled or fake.`;
+  if (type === "live") return `${shared}\n\nLIVE CAPTURE FOCUS: verify genuine camera characteristics, re-capture of a screen, filters/post-processing; search the web only if the scene shows a claimable public event.`;
+  return `${shared}\n\nSOCIAL MEDIA FOCUS (platform: ${platform || "general"}): detect troll/bot behaviour, coordinated campaigns, inflammatory language, AND fact-check any claim in the post with live web search.`;
 }
 
-Note: Source contributions should add up to approximately 100%.`;
-
-  if (type === "text") {
-    return `${baseInstruction}
-
-TEXT ANALYSIS FOCUS:
-1. Verify factual claims against known databases
-2. Check for logical inconsistencies or exaggerations
-3. Identify sensationalism or emotional manipulation
-4. Cross-reference with official records if applicable
-5. For time-sensitive claims, note if real-time verification is needed`;
-  } else if (type === "image") {
-    return `${baseInstruction}
-
-IMAGE ANALYSIS FOCUS:
-1. Detect digital manipulation artifacts
-2. Check shadow and lighting consistency
-3. Identify AI-generation patterns (DALL-E, Midjourney, etc.)
-4. Look for compression anomalies or copy-paste artifacts
-5. Assess metadata consistency if context provided`;
-  } else if (type === "live") {
-    return `${baseInstruction}
-
-LIVE CAPTURE ANALYSIS FOCUS:
-1. Verify genuine camera capture characteristics
-2. Check for screen re-capture or edited content
-3. Assess natural lighting patterns
-4. Detect filter or post-processing applications
-5. Verify environmental consistency`;
-  } else if (type === "social") {
-    return `${baseInstruction}
-
-SOCIAL MEDIA ANALYSIS FOCUS (Platform: ${platform || "general"}):
-1. Identify troll behavior patterns (inflammatory, divisive language)
-2. Detect bot-like repetition or unnatural phrasing
-3. Check for misinformation tactics
-4. Analyze sentiment and intent
-5. Look for coordinated campaign indicators`;
-  }
-  
-  return baseInstruction;
-}
-
-async function analyzeWithGemini(apiKey: string, systemPrompt: string, userPrompt: string): Promise<AnalysisResult | null> {
+function parseJson(text: string): AnalysisResult | null {
   try {
-    console.log("Attempting Gemini analysis...");
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{
-          parts: [{ text: `${systemPrompt}\n\n${userPrompt}\n\nRespond with valid JSON only.` }]
-        }],
-        generationConfig: { responseMimeType: "application/json" }
-      }),
-    });
-
-    if (response.ok) {
-      const data = await response.json();
-      const textContent = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      const result = JSON.parse(textContent);
-      console.log("Gemini analysis successful");
-      return result;
-    } else {
-      console.log("Gemini failed:", response.status);
-      return null;
-    }
-  } catch (e) {
-    console.log("Gemini error:", e);
+    const cleaned = text.replace(/```json|```/g, "").trim();
+    const start = cleaned.indexOf("{");
+    const end = cleaned.lastIndexOf("}");
+    if (start === -1 || end === -1) return null;
+    return JSON.parse(cleaned.slice(start, end + 1));
+  } catch {
     return null;
   }
 }
 
-async function analyzeWithOpenAI(apiKey: string, systemPrompt: string, userPrompt: string): Promise<AnalysisResult | null> {
-  try {
-    console.log("Attempting OpenAI cross-check...");
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-        response_format: { type: "json_object" },
-      }),
-    });
-
-    if (response.ok) {
-      const data = await response.json();
-      const result = JSON.parse(data.choices[0].message.content);
-      console.log("OpenAI cross-check successful");
-      return result;
-    } else {
-      console.log("OpenAI failed:", response.status);
-      return null;
-    }
-  } catch (e) {
-    console.log("OpenAI error:", e);
-    return null;
-  }
-}
-
-async function analyzeWithLovableAI(apiKey: string, systemPrompt: string, userPrompt: string): Promise<{ result: AnalysisResult | null; rateLimited?: boolean; paymentRequired?: boolean }> {
-  try {
-    console.log("Attempting Lovable AI...");
-    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "google/gemini-3-flash-preview",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-        response_format: { type: "json_object" },
-      }),
-    });
-
-    if (response.status === 429) {
-      return { result: null, rateLimited: true };
-    }
-    if (response.status === 402) {
-      return { result: null, paymentRequired: true };
-    }
-
-    if (response.ok) {
-      const data = await response.json();
-      const result = JSON.parse(data.choices[0].message.content);
-      console.log("Lovable AI successful");
-      return { result };
-    } else {
-      console.log("Lovable AI failed:", response.status);
-      return { result: null };
-    }
-  } catch (e) {
-    console.log("Lovable AI error:", e);
-    return { result: null };
-  }
-}
-
-function mergeResults(geminiResult: AnalysisResult | null, openaiResult: AnalysisResult | null): AnalysisResult {
-  // If only one result, use it
-  if (!geminiResult && openaiResult) return normalizeResult(openaiResult);
-  if (geminiResult && !openaiResult) return normalizeResult(geminiResult);
-  if (!geminiResult && !openaiResult) {
-    throw new Error("No analysis results available");
-  }
-
-  const g = geminiResult!;
-  const o = openaiResult!;
-
-  // Merge logic: average confidence, combine reasoning
-  const avgConfidence = Math.round((g.confidence + o.confidence) / 2);
-  
-  // Determine final verdict based on both
-  let finalVerdict: AnalysisResult["verdict"];
-  if (g.isReal === o.isReal) {
-    finalVerdict = g.isReal ? "REAL" : "FAKE";
-  } else {
-    // Disagreement - mark as MISLEADING or UNVERIFIED based on confidence
-    finalVerdict = avgConfidence >= 70 ? "MISLEADING" : "UNVERIFIED";
-  }
-  
-  const isReal = finalVerdict === "REAL";
-
-  // Combine reason points (deduplicate)
-  const allReasonPoints = [
-    ...(g.reasonPoints || []),
-    ...(o.reasonPoints || [])
-  ].slice(0, 5);
-
-  // Merge sources with adjusted contributions
-  const mergedSources = mergeSourcesWithContributions(g.sources || [], o.sources || []);
-
-  return {
-    isReal,
-    confidence: avgConfidence,
-    verdict: finalVerdict,
-    reason: `${g.reason || ""} Cross-verified: ${o.reason || ""}`.trim(),
-    reasonPoints: allReasonPoints.length > 0 ? allReasonPoints : ["Analysis completed with dual AI verification"],
-    sources: mergedSources
-  };
-}
-
-function normalizeResult(result: AnalysisResult): AnalysisResult {
-  const sources = (result.sources || []).map(s => {
-    const trustedSource = TRUSTED_SOURCES[s.name];
-    return {
-      name: s.name,
-      url: trustedSource?.url || s.url || "#",
-      type: trustedSource?.type || s.type || "web",
-      contribution: s.contribution || 25
-    };
-  });
-
-  // Ensure at least 2 sources
-  if (sources.length < 2) {
-    sources.push({
-      name: "AI Analysis",
-      url: "#",
-      type: "web" as const,
-      contribution: 100 - sources.reduce((sum, s) => sum + s.contribution, 0)
-    });
-  }
-
-  return {
-    isReal: result.isReal ?? false,
-    confidence: result.confidence ?? 75,
-    verdict: result.verdict || (result.isReal ? "REAL" : "FAKE"),
-    reason: result.reason || "Analysis completed.",
-    reasonPoints: result.reasonPoints || ["Analysis completed"],
-    sources
-  };
-}
-
-function mergeSourcesWithContributions(sources1: SourceInfo[], sources2: SourceInfo[]): SourceInfo[] {
-  const sourceMap = new Map<string, SourceInfo>();
-  
-  [...sources1, ...sources2].forEach(source => {
-    const existing = sourceMap.get(source.name);
-    if (existing) {
-      existing.contribution = Math.round((existing.contribution + source.contribution) / 2);
-    } else {
-      const trustedSource = TRUSTED_SOURCES[source.name];
-      sourceMap.set(source.name, {
-        name: source.name,
-        url: trustedSource?.url || source.url || "#",
-        type: trustedSource?.type || source.type || "web",
-        contribution: source.contribution || 25
-      });
-    }
-  });
-
-  // Normalize contributions to ~100%
-  const sources = Array.from(sourceMap.values()).slice(0, 4);
-  const totalContribution = sources.reduce((sum, s) => sum + s.contribution, 0);
-  if (totalContribution > 0 && totalContribution !== 100) {
-    const factor = 100 / totalContribution;
-    sources.forEach(s => {
-      s.contribution = Math.round(s.contribution * factor);
-    });
-  }
-
-  return sources;
-}
-
-serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
-  }
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const { type, content, context, platform, language } = await req.json();
-    
-    const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
-    const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
+    const { type, content, context, platform, language = "en" } = await req.json();
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
-    
-    if (!OPENAI_API_KEY && !GEMINI_API_KEY && !LOVABLE_API_KEY) {
-      throw new Error("No AI service configured");
-    }
+    if (!LOVABLE_API_KEY) throw new Error("AI is not configured");
 
-    const systemPrompt = getSystemPrompt(type, platform);
-    
-    let userPrompt = "";
-    if (type === "text") {
-      userPrompt = `Analyze this text for authenticity and fact-check it thoroughly:\n\n"${content}"\n\nProvide detailed analysis with specific sources and reasoning points.`;
-    } else if (type === "image") {
-      userPrompt = `Analyze this image for manipulation or AI generation. ${context ? `Context: "${context}"` : ""}\n\nProvide forensic analysis with specific findings.`;
-    } else if (type === "live") {
-      userPrompt = "Analyze this live camera capture for authenticity. Provide detailed verification findings.";
+    const isImage = (type === "image" || type === "live") && typeof content === "string" && content.startsWith("data:");
+
+    let userContent: unknown;
+    if (isImage) {
+      const text =
+        type === "live"
+          ? "Analyze this live camera capture for authenticity."
+          : `Analyze this image for manipulation or AI generation.${context ? ` Context provided by user: "${context}"` : ""}`;
+      userContent = [
+        { type: "text", text },
+        { type: "image_url", image_url: { url: content } },
+      ];
     } else if (type === "social") {
-      userPrompt = `Analyze this ${platform || "social media"} content for troll/bot behavior and misinformation:\n\n"${content}"\n\nProvide detailed behavioral analysis.`;
+      userContent = `Analyze this ${platform || "social media"} post for troll/bot behaviour AND fact-check its claims using live web search:\n\n"${content}"`;
+    } else {
+      userContent = `Fact-check this content using live web search:\n\n"${content}"`;
     }
 
-    // DUAL AI APPROACH: Use both Gemini and OpenAI for higher accuracy
-    let geminiResult: AnalysisResult | null = null;
-    let openaiResult: AnalysisResult | null = null;
+    const convo: any[] = [
+      { role: "system", content: getSystemPrompt(type, platform, language) },
+      { role: "user", content: userContent },
+    ];
 
-    // Step 1: Primary analysis with Gemini (reasoning, language understanding)
-    if (GEMINI_API_KEY) {
-      geminiResult = await analyzeWithGemini(GEMINI_API_KEY, systemPrompt, userPrompt);
-    }
+    const allHits: SearchHit[] = [];
+    let finalText = "";
 
-    // Step 2: Cross-check with OpenAI (fact verification, source matching)
-    if (OPENAI_API_KEY) {
-      openaiResult = await analyzeWithOpenAI(OPENAI_API_KEY, systemPrompt, userPrompt);
-    }
+    for (let step = 0; step < 4; step++) {
+      const res = await fetch(GATEWAY, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${LOVABLE_API_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model: MODEL, messages: convo, tools }),
+      });
 
-    // Step 3: Fallback to Lovable AI if both fail
-    if (!geminiResult && !openaiResult && LOVABLE_API_KEY) {
-      const lovableResponse = await analyzeWithLovableAI(LOVABLE_API_KEY, systemPrompt, userPrompt);
-      
-      if (lovableResponse.rateLimited) {
+      if (res.status === 429) {
         return new Response(JSON.stringify({ error: "Rate limit exceeded. Please try again later." }), {
           status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
-      if (lovableResponse.paymentRequired) {
+      if (res.status === 402) {
         return new Response(JSON.stringify({ error: "Usage limit reached. Please add credits." }), {
           status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
-      
-      if (lovableResponse.result) {
-        geminiResult = lovableResponse.result;
+      if (!res.ok) {
+        console.error("Gateway error", res.status, await res.text());
+        throw new Error("AI request failed");
+      }
+
+      const data = await res.json();
+      const msg = data.choices?.[0]?.message;
+      if (!msg) throw new Error("Empty AI response");
+      convo.push(msg);
+
+      const calls = msg.tool_calls || [];
+      if (calls.length === 0) {
+        finalText = msg.content ?? "";
+        break;
+      }
+
+      for (const call of calls) {
+        let args: any = {};
+        try { args = JSON.parse(call.function.arguments || "{}"); } catch { /* ignore */ }
+        const query = String(args.query || "");
+        console.log("web_search:", query);
+        const hits = await webSearch(query);
+        allHits.push(...hits.slice(0, 4));
+        convo.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(hits) });
       }
     }
 
-    // Step 4: Merge results from both AI engines
-    const finalResult = mergeResults(geminiResult, openaiResult);
+    const parsed = parseJson(finalText);
+    if (!parsed) throw new Error("Could not complete the verification. Please try again.");
 
-    console.log("Final merged result:", JSON.stringify(finalResult));
+    const sources = buildSources(allHits);
+    const result: AnalysisResult = {
+      isReal: parsed.verdict ? parsed.verdict === "REAL" : !!parsed.isReal,
+      confidence: Math.min(99, Math.max(50, Number(parsed.confidence) || 75)),
+      verdict: parsed.verdict || (parsed.isReal ? "REAL" : "FAKE"),
+      reason: parsed.reason || "Analysis completed.",
+      reasonPoints: Array.isArray(parsed.reasonPoints) && parsed.reasonPoints.length
+        ? parsed.reasonPoints.slice(0, 5)
+        : ["Analysis completed"],
+      sources: sources.length
+        ? sources
+        : [{ name: "AI forensic analysis (no web evidence needed)", url: "#", type: "web", contribution: 100 }],
+    };
 
-    return new Response(JSON.stringify(finalResult), {
+    console.log("Final result:", JSON.stringify({ ...result, sources: result.sources.map((s) => s.url) }));
+
+    return new Response(JSON.stringify(result), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {
