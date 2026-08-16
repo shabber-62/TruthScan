@@ -1,12 +1,9 @@
-import { webSearch, type SearchHit } from "../_shared/websearch.ts";
+import { webSearch, reverseImageSearch, type SearchHit } from "../_shared/websearch.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
-
-const GATEWAY = "https://ai.gateway.lovable.dev/v1/chat/completions";
-const MODEL = "google/gemini-3.6-flash";
 
 interface SourceInfo {
   name: string;
@@ -26,19 +23,29 @@ interface AnalysisResult {
 
 const tools = [
   {
-    type: "function",
-    function: {
-      name: "web_search",
-      description:
-        "Search the live web (news, fact-check sites, official pages) for evidence about a claim. Use for any factual, dated or time-sensitive claim (holidays, events, statistics, quotes, viral posts, images).",
-      parameters: {
-        type: "object",
-        properties: { query: { type: "string", description: "Search query" } },
-        required: ["query"],
-        additionalProperties: false,
+    functionDeclarations: [
+      {
+        name: "web_search",
+        description:
+          "Search the live web (news, fact-check sites, official pages) for evidence about a claim. Use for any factual, dated or time-sensitive claim (holidays, events, statistics, quotes, viral posts, images).",
+        parameters: {
+          type: "OBJECT",
+          properties: { query: { type: "STRING", description: "Search query" } },
+          required: ["query"],
+        },
       },
-    },
-  },
+      {
+        name: "reverse_image_search",
+        description:
+          "Perform a reverse image search on an uploaded image URL to find the original source, older occurrences, or fact-checks of the image.",
+        parameters: {
+          type: "OBJECT",
+          properties: { imageUrl: { type: "STRING", description: "The image URL (data URI or http URL) to search for" } },
+          required: ["imageUrl"],
+        },
+      }
+    ]
+  }
 ];
 
 function classify(url: string): SourceInfo["type"] {
@@ -58,6 +65,7 @@ function buildSources(hits: SearchHit[]): SourceInfo[] {
   const seen = new Set<string>();
   const picked: SearchHit[] = [];
   for (const h of hits) {
+    if (!h.url || h.url === "#") continue;
     const host = hostName(h.url);
     if (seen.has(host)) continue;
     seen.add(host);
@@ -79,26 +87,32 @@ function getSystemPrompt(type: string, platform: string | undefined, language: s
   const nowIST = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
 
   const shared = `You are TruthScan, a government-grade fact-checking system with LIVE WEB ACCESS.
-
 Current UTC date: ${today}. Current time in India (IST): ${nowIST}.
 
 MANDATORY PROCESS:
-1. Call the web_search tool BEFORE judging any factual/time-sensitive claim (today's holidays, news, events, numbers, quotes). Run 1-3 searches with different wordings to cross-check.
-2. Base every conclusion on what the search results actually say. Never invent sources or URLs.
-3. If evidence is thin or contradictory, use verdict UNVERIFIED or MISLEADING with lower confidence.
-4. Write the analysis in ${language === "te" ? "formal Telugu" : "English"}.
+1. If the input is an IMAGE, FIRST extract and read any text inside the image (OCR). Extract any factual claims from the text or the image's context.
+2. Call the web_search tool or reverse_image_search tool BEFORE judging any claim. Run 1-3 searches with different wordings to cross-check.
+3. Compare the image or extracted claims with the search results.
+4. Base every conclusion on what the search results actually say. Never invent sources or URLs.
+5. If evidence is thin or contradictory, use verdict UNVERIFIED or MISLEADING with lower confidence.
+6. LANGUAGE INDEPENDENCE: You MUST automatically detect the language of the user's input/context and write the analysis in the exact same language:
+   - If the input/context is in English, reply in English.
+   - If the input/context is in Telugu Unicode, reply in formal Telugu script.
+   - If the input/context is in Telugish / Roman Telugu (e.g. "idi nijamena?"), reply in Telugish.
+   - If no context is provided, default to ${language === "te" ? "formal Telugu" : "English"}.
+   - Adapt dynamically based on the specific input provided for this analysis.
 
-FINAL ANSWER: after research, reply with ONLY a JSON object (no markdown fences):
+FINAL ANSWER FORMAT: After your research, your final response must ONLY be a JSON object (no markdown fences, no other text):
 {
   "isReal": boolean,
   "confidence": number (60-99),
   "verdict": "REAL" | "FAKE" | "MISLEADING" | "UNVERIFIED",
-  "reason": "2-3 sentence summary stating the verified facts found on the web",
+  "reason": "2-3 sentence summary stating the verified facts found on the web, including OCR text if applicable.",
   "reasonPoints": ["Point 1: specific evidence found + which site it came from", "Point 2: ...", "Point 3: ..."]
 }`;
 
   if (type === "text") return `${shared}\n\nTEXT FOCUS: verify each factual claim against live search results; flag sensationalism, missing context, outdated dates.`;
-  if (type === "image") return `${shared}\n\nIMAGE FOCUS: inspect the image for manipulation, AI-generation artifacts, lighting/shadow inconsistency; ALSO search the web for the described scene/event to check whether it really happened and whether the image is known to be recycled or fake.`;
+  if (type === "image") return `${shared}\n\nIMAGE FOCUS: Inspect the image for manipulation. Perform OCR on the image to read text. Use reverse_image_search on the image if needed, and web_search for the extracted text to verify claims. Do NOT automatically call something TRUE just because a web result exists, and do NOT automatically call something FALSE because no result was found.`;
   if (type === "live") return `${shared}\n\nLIVE CAPTURE FOCUS: verify genuine camera characteristics, re-capture of a screen, filters/post-processing; search the web only if the scene shows a claimable public event.`;
   return `${shared}\n\nSOCIAL MEDIA FOCUS (platform: ${platform || "general"}): detect troll/bot behaviour, coordinated campaigns, inflammatory language, AND fact-check any claim in the post with live web search.`;
 }
@@ -120,81 +134,153 @@ Deno.serve(async (req) => {
 
   try {
     const { type, content, context, platform, language = "en" } = await req.json();
-    const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
-    if (!LOVABLE_API_KEY) throw new Error("AI is not configured");
+    const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
+    const SERPAPI_API_KEY = Deno.env.get("SERPAPI_API_KEY");
+    
+    if (!GEMINI_API_KEY) {
+       console.error("GEMINI_API_KEY is missing");
+       throw new Error("AI is not configured properly (Missing GEMINI_API_KEY).");
+    }
 
     const isImage = (type === "image" || type === "live") && typeof content === "string" && content.startsWith("data:");
 
-    let userContent: unknown;
+    let userContent: any[] = [];
     if (isImage) {
-      const text =
+      const mimeTypeMatch = content.match(/data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+).*,/);
+      const mimeType = mimeTypeMatch ? mimeTypeMatch[1] : "image/jpeg";
+      const base64Data = content.split(",")[1];
+      
+      const textPrompt =
         type === "live"
           ? "Analyze this live camera capture for authenticity."
-          : `Analyze this image for manipulation or AI generation.${context ? ` Context provided by user: "${context}"` : ""}`;
+          : `Analyze this image for manipulation. Perform OCR and extract claims. Image context provided by user: "${context || 'None'}"\n\nImage URL for reverse search (if you need it): ${content}`;
+          
       userContent = [
-        { type: "text", text },
-        { type: "image_url", image_url: { url: content } },
+        { text: textPrompt },
+        { inlineData: { mimeType, data: base64Data } }
       ];
     } else if (type === "social") {
-      userContent = `Analyze this ${platform || "social media"} post for troll/bot behaviour AND fact-check its claims using live web search:\n\n"${content}"`;
+      userContent = [{ text: `Analyze this ${platform || "social media"} post for troll/bot behaviour AND fact-check its claims using live web search:\n\n"${content}"` }];
     } else {
-      userContent = `Fact-check this content using live web search:\n\n"${content}"`;
+      userContent = [{ text: `Fact-check this content using live web search:\n\n"${content}"` }];
     }
 
-    const convo: any[] = [
-      { role: "system", content: getSystemPrompt(type, platform, language) },
-      { role: "user", content: userContent },
+    const contents = [
+      {
+        role: "user",
+        parts: userContent
+      }
     ];
 
     const allHits: SearchHit[] = [];
-    let finalText = "";
+    let finalJsonResponse = "";
 
-    for (let step = 0; step < 4; step++) {
-      const res = await fetch(GATEWAY, {
+    for (let step = 0; step < 5; step++) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${GEMINI_API_KEY}`;
+      
+      const requestBody = {
+        systemInstruction: {
+          parts: [{ text: getSystemPrompt(type, platform, language) }]
+        },
+        contents,
+        tools,
+      };
+
+      const res = await fetch(url, {
         method: "POST",
-        headers: { Authorization: `Bearer ${LOVABLE_API_KEY}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model: MODEL, messages: convo, tools }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody),
       });
 
-      if (res.status === 429) {
-        return new Response(JSON.stringify({ error: "Rate limit exceeded. Please try again later." }), {
-          status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-      if (res.status === 402) {
-        return new Response(JSON.stringify({ error: "Usage limit reached. Please add credits." }), {
-          status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
       if (!res.ok) {
-        console.error("Gateway error", res.status, await res.text());
+        const errorText = await res.text();
+        console.error("Gemini API Error:", res.status, errorText);
+        if (res.status === 429) {
+          throw new Error("Rate limit exceeded. Please try again later.");
+        }
         throw new Error("AI request failed");
       }
 
       const data = await res.json();
-      const msg = data.choices?.[0]?.message;
-      if (!msg) throw new Error("Empty AI response");
-      convo.push(msg);
+      const candidate = data.candidates?.[0];
+      if (!candidate || !candidate.content || !candidate.content.parts) {
+         throw new Error("Empty AI response or failed analysis");
+      }
 
-      const calls = msg.tool_calls || [];
-      if (calls.length === 0) {
-        finalText = msg.content ?? "";
+      const parts = candidate.content.parts;
+      const functionCalls = parts.filter((p: any) => p.functionCall);
+      const textParts = parts.filter((p: any) => p.text);
+
+      if (functionCalls.length === 0) {
+        // No more tools to call, we should have our JSON
+        if (textParts.length > 0) {
+           finalJsonResponse = textParts[0].text;
+        }
         break;
       }
-
-      for (const call of calls) {
-        let args: any = {};
-        try { args = JSON.parse(call.function.arguments || "{}"); } catch { /* ignore */ }
-        const query = String(args.query || "");
-        console.log("web_search:", query);
-        const hits = await webSearch(query);
-        allHits.push(...hits.slice(0, 4));
-        convo.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(hits) });
+      
+      // Append the model's tool calls to the history
+      contents.push({ role: "model", parts: functionCalls.map(f => ({ functionCall: f.functionCall })) });
+      
+      const functionResponses: any[] = [];
+      
+      for (const call of functionCalls) {
+         const name = call.functionCall.name;
+         const args = call.functionCall.args || {};
+         let resultData;
+         
+         try {
+             if (name === "web_search") {
+                 console.log("Executing web_search for:", args.query);
+                 const hits = await webSearch(args.query);
+                 if (hits.length === 0) {
+                    resultData = { error: "Fact-check search returned no results" };
+                 } else {
+                    allHits.push(...hits.slice(0, 4));
+                    resultData = hits;
+                 }
+             } else if (name === "reverse_image_search") {
+                 console.log("Executing reverse_image_search");
+                 // Pass the original image content (base64/data URI) if the model passed back something else, 
+                 // but since SerpApi requires a public URL, this might fail if it's base64. 
+                 // Let's pass the image we got. If it's base64, SerpApi won't work without uploading.
+                 // In a production app, we would upload to storage first. Since we are fixing this within constraints,
+                 // we will rely on the text/OCR claims and web search mostly if the image is not a public URL.
+                 if (args.imageUrl && args.imageUrl.startsWith("http")) {
+                    const hits = await reverseImageSearch(args.imageUrl, SERPAPI_API_KEY);
+                    if (hits.length === 0) {
+                       resultData = { error: "No reliable matching image found or SerpApi key missing." };
+                    } else {
+                       allHits.push(...hits.slice(0, 4));
+                       resultData = hits;
+                    }
+                 } else {
+                    resultData = { error: "Reverse image search requires a public URL. Proceed with OCR and text search instead." };
+                 }
+             } else {
+                 resultData = { error: "Unknown function call" };
+             }
+         } catch (err: any) {
+             resultData = { error: "Search failed: " + err.message };
+         }
+         
+         functionResponses.push({
+            functionResponse: {
+                name,
+                response: resultData
+            }
+         });
       }
+      
+      // Send the tool response back
+      contents.push({ role: "user", parts: functionResponses });
     }
 
-    const parsed = parseJson(finalText);
-    if (!parsed) throw new Error("Could not complete the verification. Please try again.");
+    const parsed = parseJson(finalJsonResponse);
+    if (!parsed) {
+        console.error("Failed to parse JSON:", finalJsonResponse);
+        throw new Error("Unable to verify this claim with the available evidence (Parsing failed).");
+    }
 
     const sources = buildSources(allHits);
     const result: AnalysisResult = {
@@ -210,14 +296,14 @@ Deno.serve(async (req) => {
         : [{ name: "AI forensic analysis (no web evidence needed)", url: "#", type: "web", contribution: 100 }],
     };
 
-    console.log("Final result:", JSON.stringify({ ...result, sources: result.sources.map((s) => s.url) }));
+    console.log("Final result ready with", result.sources.length, "sources.");
 
     return new Response(JSON.stringify(result), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {
-    console.error("Error:", error);
-    const message = error instanceof Error ? error.message : "Unknown error";
+    console.error("Error in analyze-content:", error);
+    const message = error instanceof Error ? error.message : "Unknown error occurred during analysis.";
     return new Response(JSON.stringify({ error: message }), {
       status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });

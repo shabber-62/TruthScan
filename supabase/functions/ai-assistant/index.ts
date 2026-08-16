@@ -1,179 +1,178 @@
+import { webSearch, imageSearch, type SearchHit, type ImageHit } from "../_shared/websearch.ts";
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const GATEWAY = "https://ai.gateway.lovable.dev/v1/chat/completions";
-const MODEL = "google/gemini-3.6-flash";
-
-interface SearchHit { title: string; url: string; snippet: string }
-
-async function webSearch(query: string): Promise<SearchHit[]> {
-  const hits: SearchHit[] = [];
-  const clean = (u: string) => {
-    const uddg = u.match(/uddg=([^&)]+)/);
-    return uddg ? decodeURIComponent(uddg[1]) : u;
-  };
-
-  // Primary: DuckDuckGo results rendered to markdown via r.jina.ai
-  try {
-    const res = await fetch(
-      "https://r.jina.ai/https://duckduckgo.com/html/?q=" + encodeURIComponent(query),
-      { headers: { "User-Agent": "Mozilla/5.0 (compatible; TruthScanBot/1.0)" } },
-    );
-    if (res.ok) {
-      const md = await res.text();
-      const re = /##\s*\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g;
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(md)) && hits.length < 6) {
-        const url = clean(m[2]);
-        if (url.includes("duckduckgo.com")) continue;
-        const after = md.slice(m.index + m[0].length, m.index + m[0].length + 600);
-        const snippet = after
-          .split("\n")
-          .map((l) => l.trim())
-          .filter((l) => l && !l.startsWith("[") && !l.startsWith("!") && !l.startsWith("#"))
-          .slice(0, 2)
-          .join(" ")
-          .slice(0, 400);
-        hits.push({ title: m[1].trim(), url, snippet });
-      }
-    }
-  } catch (e) {
-    console.log("jina search failed", e);
-  }
-
-  if (hits.length > 0) return hits;
-
-  // Fallback: Bing RSS
-  try {
-    const res = await fetch(
-      "https://www.bing.com/search?format=rss&q=" + encodeURIComponent(query),
-      { headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" } },
-    );
-    if (res.ok) {
-      const xml = await res.text();
-      const strip = (s: string) =>
-        s.replace(/<!\[CDATA\[|\]\]>/g, "")
-          .replace(/<[^>]*>/g, "")
-          .replace(/&amp;/g, "&")
-          .replace(/&quot;/g, '"')
-          .replace(/&#39;/g, "'")
-          .replace(/&lt;/g, "<")
-          .replace(/&gt;/g, ">")
-          .trim();
-      const items = xml.match(/<item>[\s\S]*?<\/item>/g) || [];
-      for (const item of items.slice(0, 6)) {
-        const title = strip(item.match(/<title>([\s\S]*?)<\/title>/)?.[1] || "");
-        const url = strip(item.match(/<link>([\s\S]*?)<\/link>/)?.[1] || "");
-        const snippet = strip(item.match(/<description>([\s\S]*?)<\/description>/)?.[1] || "");
-        if (url) hits.push({ title, url, snippet });
-      }
-    }
-  } catch (e) {
-    console.log("bing search failed", e);
-  }
-
-  return hits;
-}
-
 const tools = [
   {
-    type: "function",
-    function: {
-      name: "web_search",
-      description:
-        "Search the live web for up-to-date facts: today's news, holidays, dates, prices, scores, events. Use it whenever the answer depends on current or recent information.",
-      parameters: {
-        type: "object",
-        properties: { query: { type: "string", description: "Search query" } },
-        required: ["query"],
-        additionalProperties: false,
+    functionDeclarations: [
+      {
+        name: "web_search",
+        description:
+          "Search the live web for up-to-date facts: today's news, holidays, dates, prices, scores, events. Use it whenever the answer depends on current or recent information.",
+        parameters: {
+          type: "OBJECT",
+          properties: { query: { type: "STRING", description: "Search query" } },
+          required: ["query"],
+        },
       },
-    },
-  },
+      {
+        name: "search_images",
+        description:
+          "Search the web for images, photos, pictures, posters, or visual references of a person, place, or object. Use this ONLY when the user explicitly asks to see or show photos/images.",
+        parameters: {
+          type: "OBJECT",
+          properties: { query: { type: "STRING", description: "Image search query" } },
+          required: ["query"],
+        },
+      }
+    ]
+  }
 ];
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
   try {
-    const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
-    if (!LOVABLE_API_KEY) throw new Error("AI is not configured");
+    const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
+    const SERPAPI_API_KEY = Deno.env.get("SERPAPI_API_KEY");
+    if (!GEMINI_API_KEY) throw new Error("AI is not configured properly (Missing GEMINI_API_KEY).");
 
     const { messages = [], language = "en" } = await req.json();
 
     const today = new Date().toISOString().slice(0, 10);
     const nowIST = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
 
-    const system = `You are TruthScan AI, a helpful, accurate general-purpose assistant (like a research-backed chat assistant).
+    const system = `You are TruthScan AI, a helpful, accurate general-purpose assistant with LIVE WEB and IMAGE SEARCH ACCESS.
 
 Current UTC date: ${today}. Current time in India (IST): ${nowIST}.
 
 RULES:
-1. For anything time-sensitive (today's news, holidays, weather, prices, sports, "is today a holiday", recent events), you MUST call the web_search tool first and base the answer on the results. Never guess.
-2. You may call web_search multiple times with different queries to cross-check facts.
-3. Cite sources at the end as a markdown list of links when you used search.
-4. Be concise, well-structured markdown. Say clearly when something is uncertain.
-5. Reply in ${language === "te" ? "Telugu" : "English"} unless the user writes in another language.`;
+1. For time-sensitive questions, news, facts, holidays, use web_search first.
+2. If the user explicitly asks to SHOW or GIVE photos, images, or pictures, you MUST call search_images.
+3. You can call both tools if the user asks for images AND information (e.g. "show me photos of X and tell me their latest news").
+4. FAST IMAGE DELIVERY: If the user ONLY asks for photos (e.g., "prabhas photos", "show me laptop images"), call search_images, and then IMMEDIATELY output a brief confirmation message and STOP. Do NOT over-analyze or perform unnecessary extra searches.
+5. CRITICAL: NEVER say you "cannot display images" or "cannot send image files". The UI *will* render the images you return via the search_images tool. Always confirm you have found them.
+6. Base your answers on the results. Be concise.
+7. LANGUAGE INDEPENDENCE: You MUST automatically detect the language of the user's CURRENT message and respond in the exact same language:
+   - If they write in English, reply in English.
+   - If they write in Telugu Unicode (e.g. "ఇది ఏమిటి?"), reply in Telugu script.
+   - If they write in Telugish / Roman Telugu (e.g. "idi enti bro?"), reply in Telugish.
+   - If they explicitly ask you to speak in a specific language, follow their request.
+   - Adapt message-by-message. Do NOT permanently lock to one language.`;
 
-    const convo: any[] = [{ role: "system", content: system }, ...messages];
+    const contents = [
+       ...messages.map((m: any) => ({
+           role: m.role === "assistant" ? "model" : m.role,
+           parts: [{ text: m.content }]
+       }))
+    ];
+
     const usedSources: SearchHit[] = [];
+    const usedImages: ImageHit[] = [];
+    let finalJsonResponse = "";
+    let lastSeenText = "";
 
     for (let step = 0; step < 4; step++) {
-      const res = await fetch(GATEWAY, {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${GEMINI_API_KEY}`;
+      
+      const res = await fetch(url, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${LOVABLE_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ model: MODEL, messages: convo, tools }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+           systemInstruction: { parts: [{ text: system }] },
+           contents,
+           tools,
+        }),
       });
 
-      if (res.status === 429) {
-        return new Response(JSON.stringify({ error: "Rate limit exceeded. Please try again shortly." }), {
-          status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-      if (res.status === 402) {
-        return new Response(JSON.stringify({ error: "AI usage limit reached. Please add credits." }), {
-          status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
       if (!res.ok) {
-        const t = await res.text();
-        console.error("Gateway error", res.status, t);
+        if (res.status === 429) {
+          throw new Error("Rate limit exceeded. Please try again shortly.");
+        }
+        console.error("Gemini API Error:", res.status, await res.text());
         throw new Error("AI request failed");
       }
 
       const data = await res.json();
-      const msg = data.choices?.[0]?.message;
-      if (!msg) throw new Error("Empty AI response");
-      convo.push(msg);
-
-      const calls = msg.tool_calls || [];
-      if (calls.length === 0) {
-        return new Response(
-          JSON.stringify({ content: msg.content ?? "", sources: usedSources }),
-          { headers: { ...corsHeaders, "Content-Type": "application/json" } },
-        );
+      const candidate = data.candidates?.[0];
+      if (!candidate || !candidate.content || !candidate.content.parts) {
+         throw new Error("Empty AI response");
       }
 
-      for (const call of calls) {
-        let args: any = {};
-        try { args = JSON.parse(call.function.arguments || "{}"); } catch (_e) { /* ignore */ }
-        const hits = await webSearch(String(args.query || ""));
-        usedSources.push(...hits.slice(0, 3));
-        convo.push({
-          role: "tool",
-          tool_call_id: call.id,
-          content: JSON.stringify(hits),
-        });
+      const parts = candidate.content.parts;
+      const functionCalls = parts.filter((p: any) => p.functionCall);
+      const textParts = parts.filter((p: any) => p.text);
+
+      if (textParts.length > 0) {
+         lastSeenText = textParts.map((p: any) => p.text).join("\n");
       }
+
+      if (functionCalls.length === 0) {
+        if (textParts.length > 0) {
+           finalJsonResponse = lastSeenText;
+        }
+        break;
+      }
+
+      contents.push({ role: "model", parts: functionCalls.map((f: any) => ({ functionCall: f.functionCall })) });
+      const functionResponses: any[] = [];
+
+      for (const call of functionCalls) {
+         const name = call.functionCall.name;
+         const args = call.functionCall.args || {};
+         let resultData;
+         
+         try {
+             if (name === "web_search") {
+                 const hits = await webSearch(args.query);
+                 usedSources.push(...hits.slice(0, 3));
+                 resultData = hits;
+             } else if (name === "search_images") {
+                 const hits = await imageSearch(args.query, SERPAPI_API_KEY);
+                 if (hits.length === 0) {
+                     resultData = { error: "No relevant images were found." };
+                 } else {
+                     usedImages.push(...hits);
+                     resultData = hits;
+                 }
+             } else {
+                 resultData = { error: "Unknown function call" };
+             }
+         } catch (err: any) {
+             resultData = { error: "Search failed: " + err.message };
+         }
+         
+         functionResponses.push({
+            functionResponse: { name, response: resultData }
+         });
+      }
+      
+      contents.push({ role: "user", parts: functionResponses });
+    }
+
+    if (!finalJsonResponse) {
+       if (lastSeenText) {
+          finalJsonResponse = lastSeenText;
+       } else if (usedImages.length > 0 || usedSources.length > 0) {
+          // Fallback message prioritizing dynamic language
+          const userMessage = messages[messages.length - 1]?.content || "";
+          if (userMessage.match(/[a-zA-Z]/) && userMessage.toLowerCase().includes("bro")) {
+              finalJsonResponse = "Bro, konni relevant results dorikayi. Kindha chudu. Complete research time out ayyindi.";
+          } else if (userMessage.match(/[\u0C00-\u0C7F]/)) {
+              finalJsonResponse = "కొన్ని ఫలితాలు దొరికాయి. పూర్తి పరిశోధన సమయం ముగిసింది. దయచేసి కింద ఉన్న సమాచారాన్ని చూడండి.";
+          } else {
+              finalJsonResponse = "I found some partial results, but the full research process timed out. Please see the available results below.";
+          }
+       } else {
+          finalJsonResponse = "I couldn't complete the research in time. Please rephrase your question.";
+       }
     }
 
     return new Response(
-      JSON.stringify({ content: "I couldn't complete the research in time. Please rephrase your question.", sources: usedSources }),
+      JSON.stringify({ content: finalJsonResponse, sources: usedSources, images: usedImages }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   } catch (error) {

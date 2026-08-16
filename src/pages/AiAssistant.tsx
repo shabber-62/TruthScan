@@ -11,13 +11,15 @@ import { toast } from "sonner";
 import { useLanguage } from "@/contexts/LanguageContext";
 
 interface Source { title: string; url: string; snippet: string }
-interface ChatMessage { role: "user" | "assistant"; content: string; sources?: Source[] }
+interface ImageHit { url: string; thumbnail: string; sourceUrl: string; sourceDomain: string; title: string; }
+interface ChatMessage { role: "user" | "assistant"; content: string; sources?: Source[]; images?: ImageHit[] }
 
 const AiAssistant = () => {
   const { language } = useLanguage();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [selectedImage, setSelectedImage] = useState<ImageHit | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -47,7 +49,7 @@ const AiAssistant = () => {
         return;
       }
 
-      setMessages([...next, { role: "assistant", content: data.content, sources: data.sources }]);
+      setMessages([...next, { role: "assistant", content: data.content, sources: data.sources, images: data.images }]);
     } catch (e) {
       console.error(e);
       toast.error(
@@ -72,8 +74,8 @@ const AiAssistant = () => {
           </h1>
           <p className="text-muted-foreground font-mono text-sm">
             {language === "en"
-              ? "Ask anything — live web research for today's news, holidays and facts"
-              : "ఏదైనా అడగండి — నేటి వార్తలు, సెలవులు, వాస్తవాల కోసం లైవ్ వెబ్ పరిశోధన"}
+              ? "Ask anything — live web research for today's news, holidays, facts, and images"
+              : "ఏదైనా అడగండి — నేటి వార్తలు, సెలవులు, వాస్తవాలు మరియు చిత్రాల కోసం లైవ్ వెబ్ పరిశోధన"}
           </p>
         </div>
 
@@ -86,7 +88,7 @@ const AiAssistant = () => {
                 <ul className="list-disc pl-5 space-y-1">
                   <li>Is today a public holiday in India?</li>
                   <li>What are today's top news headlines?</li>
-                  <li>Explain quantum computing in simple terms</li>
+                  <li>Show me photos of Hyderabad</li>
                 </ul>
               </div>
             </CyberCard>
@@ -103,9 +105,39 @@ const AiAssistant = () => {
                 className={`rounded-lg border p-4 max-w-[85%] ${
                   m.role === "user"
                     ? "bg-primary/10 border-primary/30"
-                    : "bg-card/60 border-border/50"
+                    : "bg-card/60 border-border/50 w-full"
                 }`}
               >
+                {m.images && m.images.length > 0 && (
+                  <div className="mb-4 grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {m.images.map((img, idx) => (
+                      <button 
+                        key={idx} 
+                        onClick={() => setSelectedImage(img)}
+                        className="relative group overflow-hidden rounded-lg border border-border/50 block aspect-square bg-black/50 text-left"
+                        title={img.title}
+                      >
+                        <img 
+                          src={img.thumbnail || img.url} 
+                          alt={img.title} 
+                          className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity" 
+                          onError={(e) => {
+                            // If thumbnail fails, try original URL, otherwise hide the broken image
+                            if (e.currentTarget.src !== img.url) {
+                              e.currentTarget.src = img.url;
+                            } else {
+                              e.currentTarget.style.display = 'none';
+                            }
+                          }}
+                        />
+                        <div className="absolute bottom-0 left-0 right-0 bg-black/80 p-1 px-2 text-[10px] text-neon-cyan truncate transform translate-y-full group-hover:translate-y-0 transition-transform">
+                          {img.sourceDomain || 'View Image'}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                
                 <div className="prose prose-sm prose-invert max-w-none font-mono prose-headings:text-primary prose-a:text-neon-cyan">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
                 </div>
@@ -143,7 +175,7 @@ const AiAssistant = () => {
                 <Bot className="w-4 h-4 text-neon-cyan animate-pulse" />
               </div>
               <span className="animate-pulse">
-                {language === "en" ? "Researching the web..." : "వెబ్‌లో పరిశోధిస్తోంది..."}
+                {language === "en" ? "Researching..." : "పరిశోధిస్తోంది..."}
               </span>
             </div>
           )}
@@ -182,6 +214,49 @@ const AiAssistant = () => {
           </CyberCard>
         </div>
       </main>
+
+      {/* Image Viewer Modal */}
+      {selectedImage && (
+        <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-black/90 p-4 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-4xl flex justify-between items-center mb-4">
+            <h3 className="text-neon-cyan font-mono truncate mr-4">
+              {selectedImage.title}
+            </h3>
+            <button 
+              onClick={() => setSelectedImage(null)}
+              className="text-muted-foreground hover:text-white shrink-0 p-2"
+            >
+              Close
+            </button>
+          </div>
+          
+          <div className="relative w-full max-w-4xl max-h-[70vh] flex items-center justify-center bg-black/50 border border-border/50 rounded-lg overflow-hidden">
+            <img 
+              src={selectedImage.url} 
+              alt={selectedImage.title} 
+              className="max-w-full max-h-[70vh] object-contain"
+              onError={(e) => {
+                if (e.currentTarget.src !== selectedImage.thumbnail) {
+                   e.currentTarget.src = selectedImage.thumbnail;
+                }
+              }}
+            />
+          </div>
+
+          <div className="w-full max-w-4xl mt-4 flex justify-between items-center text-sm font-mono">
+            <span className="text-muted-foreground">Source: {selectedImage.sourceDomain}</span>
+            <a 
+              href={selectedImage.sourceUrl} 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="px-4 py-2 bg-primary/20 text-primary hover:bg-primary/30 border border-primary/50 rounded transition-colors flex items-center gap-2"
+            >
+              <Globe className="w-4 h-4" />
+              View Original Source
+            </a>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

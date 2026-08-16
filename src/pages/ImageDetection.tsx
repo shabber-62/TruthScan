@@ -72,10 +72,15 @@ const ImageDetection = () => {
       });
 
       if (error) {
-        if (error.message?.includes("429")) {
+        // Supabase functions sometimes return error details inside error.context
+        const specificError = (error as any).context?.error || (error as any).message;
+        
+        if (specificError?.includes("429")) {
           toast.error(language === "en" ? "Rate limit exceeded. Please try again later." : "రేట్ లిమిట్ మించిపోయింది.");
-        } else if (error.message?.includes("402")) {
+        } else if (specificError?.includes("402")) {
           toast.error(language === "en" ? "Usage limit reached. Please add credits to continue." : "వినియోగ పరిమితి చేరుకుంది.");
+        } else if (specificError) {
+          toast.error(specificError);
         } else {
           throw error;
         }
@@ -88,9 +93,10 @@ const ImageDetection = () => {
       }
 
       setResult(data);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Analysis error:", error);
-      toast.error(language === "en" ? "Failed to analyze image. Please try again." : "చిత్రాన్ని విశ్లేషించడం విఫలమైంది.");
+      const msg = error?.message || (language === "en" ? "Failed to analyze image. Please try again." : "చిత్రాన్ని విశ్లేషించడం విఫలమైంది.");
+      toast.error(msg);
     } finally {
       setIsAnalyzing(false);
     }
